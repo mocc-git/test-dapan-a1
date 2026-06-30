@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""变体: scrape_steamdt_E2.py - C1+slide_wait 1.5s
-基于C1方案生成, 修改参数以测试衍生优化。
-"""
 """SteamDT 大盘+热门板块 K线采集（含 VOL 真实成交量 + TUR 真实成交额）
 
 由 scrape_home.py 在 csqaq 采集完成后调用，复用同一 Playwright page/context。
@@ -217,7 +214,7 @@ def scrape_steamdt(page):
         result.sort(key=lambda x: int(x.get("t", 0)))
         return result
 
-    def _load_steamdt_full_kline(ktype, max_slides=6, init_wait=10000):
+    def _load_steamdt_full_kline(ktype, max_slides=8, init_wait=10000):
         print(f"  [dataZoom] SteamDT 加载 ktype={ktype} 完整历史...", flush=True)
         end_wait = time.time() + init_wait / 1000
         existing = []
@@ -239,7 +236,7 @@ def scrape_steamdt(page):
         for slide_idx in range(max_slides):
             try:
                 page.evaluate(f"""{chart_expr} && {chart_expr}.scrollToDataIndex && {chart_expr}.scrollToDataIndex(0)""")
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(1800)
 
                 new_data = None
                 for kr in reversed(kline_responses):
