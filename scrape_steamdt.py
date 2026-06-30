@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""变体: scrape_steamdt_A1.py - 保守优化: goto 3s, tab 3s, slide 1.8s, slides 6/4
-基于原始 scrape_steamdt.py 生成, 修改了 6 处参数。
+"""变体: scrape_steamdt_E2.py - C1+slide_wait 1.5s
+基于C1方案生成, 修改参数以测试衍生优化。
 """
 """SteamDT 大盘+热门板块 K线采集（含 VOL 真实成交量 + TUR 真实成交额）
 
@@ -239,7 +239,7 @@ def scrape_steamdt(page):
         for slide_idx in range(max_slides):
             try:
                 page.evaluate(f"""{chart_expr} && {chart_expr}.scrollToDataIndex && {chart_expr}.scrollToDataIndex(0)""")
-                page.wait_for_timeout(1800)
+                page.wait_for_timeout(1500)
 
                 new_data = None
                 for kr in reversed(kline_responses):
@@ -254,7 +254,7 @@ def scrape_steamdt(page):
                     stable_rounds = 0
                 else:
                     stable_rounds += 1
-                    if stable_rounds >= 2:
+                    if stable_rounds >= 1:
                         print(f"  [dataZoom] 数据不再增长，停止滑动（最终 {prev_count} 条）", flush=True)
                         break
             except Exception as e:
@@ -293,7 +293,7 @@ def scrape_steamdt(page):
                         page.wait_for_timeout(3000)
                     else:
                         print(f"  ⚠ 未找到 {PERIOD_BTNS[pk]} 按钮，等待初始数据", flush=True)
-            data = _wait_for_ktype(ktype, 15000)
+            data = _wait_for_ktype(ktype, 10000)
             if data:
                 converted = _convert(data)
                 broad_periods[pk] = converted
