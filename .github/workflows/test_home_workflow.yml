@@ -1,0 +1,59 @@
+name: CSQAQ Home DataZoom Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: '测试轮次ID (如 run1, run2, run3)'
+        required: true
+        default: 'run1'
+
+concurrency:
+  group: home-test-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install playwright
+        run: pip install playwright
+      - name: Get playwright version
+        id: pw-version
+        run: echo "version=$(pip show playwright | grep '^Version:' | awk '{print $2}')" >> $GITHUB_OUTPUT
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+      - name: Install Playwright Browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
+      - name: Install browser dependencies
+        run: python -m playwright install-deps chromium
+      - name: Run CSQAQ Home dataZoom test
+        run: python test_home_runner.py
+      - name: Rename result with run_id
+        if: always()
+        run: |
+          if [ -f home_test_result.json ]; then
+            mv home_test_result.json home_test_result_${{ github.event.inputs.run_id }}.json
+          fi
+          if [ -f home_raw_result.json ]; then
+            mv home_raw_result.json home_raw_result_${{ github.event.inputs.run_id }}.json
+          fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: home_result_${{ github.event.inputs.run_id }}
+          path: |
+            home_test_result_*.json
+            home_raw_result_*.json
