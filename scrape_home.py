@@ -31,7 +31,7 @@ RESULT_FILE = "home_result.json"
 DEFAULT_INDEX_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
 
 # 默认抓取的周期（sub_data 旧接口，main_data 合成）
-DEFAULT_PERIODS = ["daily", "hours"]
+DEFAULT_PERIODS = ["daily"]
 
 # K 线真实 OHLCV 周期（sub/kline 新接口）
 # 已移除 4hour，与 SteamDT 保持一致（SteamDT 无 4hour 周期）
@@ -160,6 +160,32 @@ def _ensure_vol_indicator(page):
 
     success = result.get("action") in ("opened", "already_open")
     return {"success": success, **result}
+
+
+def load_last_result(filepath="last_home_result.json"):
+    """加载上次采集结果，用于增量模式判断是否跳过dataZoom
+
+    读取上次采集的 home_result.json，统计有完整历史（>=200条1day）的指数数量。
+    如果存在完整历史的指数，返回完整数据供合并使用；否则返回None。
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        sub_kline = data.get("sub_kline", {})
+        full_count = 0
+        for idx_id_str, info in sub_kline.items():
+            periods = info.get("periods", {})
+            if len(periods.get("1day", [])) >= 200:
+                full_count += 1
+        if full_count > 0:
+            print(f"  [增量] 加载上次结果: {full_count} 个指数有完整历史", flush=True)
+            return data
+        else:
+            print(f"  [增量] 上次结果无完整历史，将执行全量dataZoom", flush=True)
+            return None
+    except Exception:
+        print(f"  [增量] 无上次结果，将执行全量dataZoom", flush=True)
+        return None
 
 
 def _load_csqaq_full_kline(page, idx_id, period, api_data_ref, max_slides=6):
@@ -483,14 +509,42 @@ def scrape_home(page, index_ids, periods, kline_periods=None):
                             print(f"      ✗ {idx_name} {period}: 等待超时未获取到数据", flush=True)
 
                 # 4.4 dataZoom滑动加载日线完整数据（仅1day）
-                print(f"\n  [4.4] dataZoom滑动加载日线完整数据...", flush=True)
+                # G1: 条件跳过dataZoom（读取上次结果判断）
+                print(f"\n  [4.4] dataZoom滑动加载日线完整数据（G1增量模式）...", flush=True)
                 target_indices_for_zoom = list(index_ids)
+                last_result = load_last_result()
+                last_sub_kline = (last_result or {}).get("sub_kline", {})
+                g1_skipped = 0
+                g1_executed = 0
                 for idx_id in target_indices_for_zoom:
                     if idx_id not in index_ids:
                         continue
                     if "1day" not in kline_periods:
                         continue
                     idx_name = INDEX_NAME_MAP.get(idx_id, f"id={idx_id}")
+
+                    # G1: 检查上次结果是否已有完整历史（>=200条）
+                    last_idx_data = last_sub_kline.get(str(idx_id), {})
+                    last_1day = (last_idx_data.get("periods", {})).get("1day", [])
+                    if len(last_1day) >= 200:
+                        # 合并上次历史数据与当前最新数据
+                        current_1day = api_data["sub_kline"].get((idx_id, "1day"), [])
+                        merged = {}
+                        for item in last_1day:
+                            t = item.get("t")
+                            if t is not None:
+                                merged[str(t)] = item
+                        for item in current_1day:
+                            t = item.get("t")
+                            if t is not None:
+                                merged[str(t)] = item
+                        merged_list = sorted(merged.values(), key=lambda x: int(x.get("t", 0)))
+                        api_data["sub_kline"][(idx_id, "1day")] = merged_list
+                        print(f"    [增量] 跳过 {idx_name}({idx_id}) dataZoom（合并: 上次{len(last_1day)}条 + 当前{len(current_1day)}条 = {len(merged_list)}条）", flush=True)
+                        g1_skipped += 1
+                        continue
+
+                    g1_executed += 1
                     if (idx_id, "1day") in api_data["sub_kline"]:
                         print(f"    切换到 {idx_name}({idx_id}) 日线...", flush=True)
                         if not _click_index_by_name(page, idx_name):
@@ -501,6 +555,7 @@ def scrape_home(page, index_ids, periods, kline_periods=None):
                         page.wait_for_timeout(3000)
                         final_count = _load_csqaq_full_kline(page, idx_id, "1day", api_data)
                         print(f"      ✓ {idx_name} 1day 最终: {final_count} 条", flush=True)
+                print(f"  [4.4] G1汇总: 跳过{g1_skipped}个, 执行{g1_executed}个", flush=True)
 
                 # 4.5 汇总 sub/kline 抓取结果
                 kline_success = sum(1 for k in api_data["sub_kline"].keys())
