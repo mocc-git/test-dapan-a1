@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""D4 并行采集测试运行器
+"""D4v2 并行采集测试运行器
 
-调用 scrape_home.py 的 main() 函数（触发D4并行逻辑），
+调用 scrape_home.py 的 main() 函数（触发D4v2并行逻辑），
 然后读取保存的 home_result.json 生成测试摘要。
 
 与 test_home_runner.py 的区别：
   - test_home_runner.py 调用 scrape_home()（单线程，不触发并行）
-  - run_d4_test.py 调用 main()（触发D4 6组并行+SteamDT=7线程）
+  - run_d4_test.py 调用 main()（触发D4v2 3组并行+SteamDT=4线程）
 """
 import json
 import time
@@ -23,8 +23,7 @@ def load_module(filepath, module_name):
 
 
 def main():
-    print(f"{'=' * 60}", flush=True)
-    print(f"  CSQAQ D4 并行采集测试 (6组CSQAQ+SteamDT=7线程)", flush=True)
+    print(f"  CSQAQ D4v2 并行采集测试 (3组CSQAQ+SteamDT=4线程)", flush=True)
     print(f"  时间: {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print(f"{'=' * 60}", flush=True)
 
@@ -103,8 +102,8 @@ def main():
         "index_stats": index_stats,
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
         "d4_parallel": True,
-        "d4_groups": 6,
-        "d4_threads": 7,
+        "d4_groups": 3,
+        "d4_threads": 4,
     }
 
     print(f"\n{'=' * 60}", flush=True)
