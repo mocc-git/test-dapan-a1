@@ -19,6 +19,7 @@
 
 import argparse
 import json
+import time
 import datetime
 import urllib.parse
 import threading
@@ -526,24 +527,32 @@ def scrape_home(page, index_ids, periods, kline_periods=None, skip_steamdt=False
                         continue
                     idx_name = INDEX_NAME_MAP.get(idx_id, f"id={idx_id}")
 
-                    # G1: 检查上次结果是否已有完整历史（>=200条）
+                    # G1: 检查上次结果是否已有完整历史（>=200条 1day）
                     last_idx_data = last_sub_kline.get(str(idx_id), {})
                     last_1day = (last_idx_data.get("periods", {})).get("1day", [])
                     if len(last_1day) >= 200:
-                        # 合并上次历史数据与当前最新数据
-                        current_1day = api_data["sub_kline"].get((idx_id, "1day"), [])
-                        merged = {}
-                        for item in last_1day:
-                            t = item.get("t")
-                            if t is not None:
-                                merged[str(t)] = item
-                        for item in current_1day:
-                            t = item.get("t")
-                            if t is not None:
-                                merged[str(t)] = item
-                        merged_list = sorted(merged.values(), key=lambda x: int(x.get("t", 0)))
-                        api_data["sub_kline"][(idx_id, "1day")] = merged_list
-                        print(f"    [增量] 跳过 {idx_name}({idx_id}) dataZoom（合并: 上次{len(last_1day)}条 + 当前{len(current_1day)}条 = {len(merged_list)}条）", flush=True)
+                        # 合并所有周期（1day/1hour/7day）：current覆盖last相同timestamp
+                        # 修复：原逻辑只合并1day，1hour/7day历史数据会丢失
+                        last_periods = last_idx_data.get("periods", {})
+                        merge_summary = []
+                        for period in kline_periods:
+                            last_period_data = last_periods.get(period, [])
+                            current_period_data = api_data["sub_kline"].get((idx_id, period), [])
+                            if not last_period_data and not current_period_data:
+                                continue
+                            merged = {}
+                            for item in last_period_data:
+                                t = item.get("t")
+                                if t is not None:
+                                    merged[str(t)] = item
+                            for item in current_period_data:
+                                t = item.get("t")
+                                if t is not None:
+                                    merged[str(t)] = item
+                            merged_list = sorted(merged.values(), key=lambda x: int(x.get("t", 0)))
+                            api_data["sub_kline"][(idx_id, period)] = merged_list
+                            merge_summary.append(f"{period}:{len(last_period_data)}+{len(current_period_data)}={len(merged_list)}")
+                        print(f"    [增量] 跳过 {idx_name}({idx_id}) dataZoom（合并: {', '.join(merge_summary)}）", flush=True)
                         g1_skipped += 1
                         continue
 
@@ -748,8 +757,8 @@ def main():
     else:
         kline_periods = DEFAULT_KLINE_PERIODS
 
-    # D4: 将指数分成6组（约4个/组）
-    num_groups = 6
+    # D4v2: 将指数分成3组（约8个/组）— 减少并发数避免GA runner资源不足
+    num_groups = 3
     chunk_size = (len(index_ids) + num_groups - 1) // num_groups
     groups = [index_ids[i*chunk_size:(i+1)*chunk_size] for i in range(num_groups)]
     for i, g in enumerate(groups):
@@ -757,7 +766,7 @@ def main():
 
     print(f"  sub_data 周期: {periods}", flush=True)
     print(f"  sub/kline 周期: {kline_periods}", flush=True)
-    print(f"  模式: D4 全并行（{num_groups}组CSQAQ + 1个SteamDT = {num_groups+1}线程）", flush=True)
+    print(f"  模式: D4v2 并行（{num_groups}组CSQAQ + 1个SteamDT = {num_groups+1}线程）", flush=True)
 
     start_time = datetime.datetime.now()
 
@@ -771,7 +780,7 @@ def main():
         "data": None,
     }
 
-    # D4: 7线程并行采集（6个CSQAQ子集 + 1个SteamDT）
+    # D4v2: 4线程并行采集（3个CSQAQ子集 + 1个SteamDT），2秒错峰启动
     try:
         with ThreadPoolExecutor(max_workers=num_groups + 1) as executor:
             future_groups = {}
@@ -779,6 +788,8 @@ def main():
                 if group:
                     future_groups[i+1] = executor.submit(
                         run_csqaq_subset_thread, group, periods, kline_periods, i+1)
+                    time.sleep(2)  # 错峰启动，避免同时启动多个浏览器实例
+            time.sleep(2)
             future_steamdt = executor.submit(run_steamdt_thread)
 
             group_results = {}
@@ -786,7 +797,7 @@ def main():
                 group_results[gid] = future.result()
             steamdt_result = future_steamdt.result()
 
-        # 合并4个CSQAQ子集结果
+        # 合并3个CSQAQ子集结果
         merged = {
             "current_data": None,
             "sub_data": {},
@@ -802,6 +813,7 @@ def main():
         for gid, gres in group_results.items():
             if not gres:
                 fail_msgs.append(f"G{gid}:无结果")
+                print(f"[D4v2] G{gid} FAILED: 无结果", flush=True)
                 continue
             if gres.get("scrape_ok"):
                 ok_count += 1
@@ -815,8 +827,11 @@ def main():
                 g_sub_kline = gres.get("sub_kline", {})
                 merged["sub_data"].update(g_sub_data)
                 merged["sub_kline"].update(g_sub_kline)
+                print(f"[D4v2] G{gid} OK: {len(g_sub_kline)} indices", flush=True)
             else:
-                fail_msgs.append(f"G{gid}:{gres.get('scrape_fail', 'unknown')}")
+                fail_msg = gres.get('scrape_fail', 'unknown')
+                fail_msgs.append(f"G{gid}:{fail_msg}")
+                print(f"[D4v2] G{gid} FAILED: {fail_msg}", flush=True)
 
         merged["scrape_ok"] = ok_count > 0
         merged["scrape_fail"] = "; ".join(fail_msgs) if fail_msgs else ""
@@ -824,11 +839,11 @@ def main():
         # 合并SteamDT结果
         if steamdt_result.get("scrape_ok"):
             merged["steamdt_kline"] = steamdt_result.get("indices", {})
-            print(f"\n[D4] SteamDT 结果已合并", flush=True)
+            print(f"\n[D4v2] SteamDT 结果已合并", flush=True)
         else:
-            print(f"\n[D4] ⚠ SteamDT 采集失败: {steamdt_result.get('scrape_fail', 'unknown')}", flush=True)
+            print(f"\n[D4v2] ⚠ SteamDT 采集失败: {steamdt_result.get('scrape_fail', 'unknown')}", flush=True)
 
-        print(f"[D4] CSQAQ子集成功: {ok_count}/{len(group_results)}", flush=True)
+        print(f"[D4v2] CSQAQ子集成功: {ok_count}/{len(group_results)}", flush=True)
 
         result["data"] = merged
 
